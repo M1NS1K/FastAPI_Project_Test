@@ -1,81 +1,53 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
+import numpy as np
+import cv2
+import json
+import base64
+import asyncio
+import socket
 
 app = FastAPI()
 
-html = """
-<!DOCTYPE html>
-<html>
-    <head>
-        <title>Chat</title>
-    </head>
-    <body>
-        <h1>WebSocket Chat</h1>
-        <h2>Your ID: <span id="ws-id"></span></h2>
-        <form action="" onsubmit="sendMessage(event)">
-            <input type="text" id="messageText" autocomplete="off"/>
-            <button>Send</button>
-        </form>
-        <ul id='messages'>
-        </ul>
-        <script>
-            var client_id = Date.now()
-            document.querySelector("#ws-id").textContent = client_id;
-            var ws = new WebSocket(`ws://localhost:8000/ws/${client_id}`);
-            ws.onmessage = function(event) {
-                var messages = document.getElementById('messages')
-                var message = document.createElement('li')
-                var content = document.createTextNode(event.data)
-                message.appendChild(content)
-                messages.appendChild(message)
-            };
-            function sendMessage(event) {
-                var input = document.getElementById("messageText")
-                ws.send(input.value)
-                input.value = ''
-                event.preventDefault()
-            }
-        </script>
-    </body>
-</html>
-"""
+# 모델 불러오기
+model = np.load_model()
 
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(receive_frames())
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
+async def receive_frames():
+    # 소켓 생성 및 바인딩
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('localhost', 8000))
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
+    while True:
+        # 데이터 수신
+        data, address = sock.recvfrom(65507)
+        json_data = json.loads(data.decode('utf-8'))
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        # 프레임 복구
+        buffer = base64.b64decode(json_data['frame'])
+        frame = cv2.imdecode(np.frombuffer(buffer, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
+        # 프레임 전처리
+        processed_frame = preprocess_frame(frame)
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+        # 모델 예측
+        prediction = model.predict(processed_frame)
 
+        # 예측 결과 후처리
+        processed_prediction = postprocess_prediction(prediction)
 
-manager = ConnectionManager()
+        # 결과 전송
+        json_result = json.dumps(processed_prediction)
+        sock.sendto(json_result.encode('utf-8'), address)
 
+def preprocess_frame(frame):
+    # 프레임 전처리 로직 구현
+    # 예: 크기 조정, 정규화 등
+    pass
 
-@app.get("/")
-async def get():
-    return HTMLResponse(html)
-
-
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: int):
-    await manager.connect(websocket)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            await manager.send_personal_message(f"You wrote: {data}", websocket)
-            await manager.broadcast(f"Client #{client_id} says: {data}")
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        await manager.broadcast(f"Client #{client_id} left the chat")
+def postprocess_prediction(prediction):
+    # 예측 결과 후처리 로직 구현
+    # 예: 클래스 레이블 매핑, 필터링 등
+    pass
